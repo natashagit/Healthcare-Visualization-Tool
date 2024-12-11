@@ -1,0 +1,564 @@
+<!DOCTYPE html>
+<html>
+	<head>
+		<title>2x2 Visualization Grid with Adjusted Bar Chart</title>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+		<!-- Leaflet CSS and JS -->
+		<link
+			rel="stylesheet"
+			href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css"
+		/>
+		<script src="https://unpkg.com/leaflet@1.7.1/dist/leaflet.js"></script>
+		<!-- Chart.js -->
+		<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+		<!-- Chart.js Data Labels Plugin -->
+		<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2"></script>
+		<!-- Papa Parse for CSV parsing -->
+		<script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.3.0/papaparse.min.js"></script>
+
+		<style>
+			body {
+				display: grid;
+				grid-template-columns: 1fr 1fr;
+				grid-template-rows: 1fr 1fr;
+				height: 100vh;
+				margin: 0;
+				padding: 0;
+				font-family: Arial, sans-serif;
+			}
+			.grid-item {
+				border: 1px solid #ccc;
+				box-sizing: border-box;
+				position: relative;
+				display: flex;
+				flex-direction: column;
+			}
+			#map {
+				flex: 1;
+			}
+			.controls {
+				padding: 5px;
+				background-color: #f4f4f4;
+				border-bottom: 1px solid #ccc;
+				display: flex;
+				align-items: center;
+				gap: 10px;
+			}
+			select {
+				font-size: 14px;
+				margin-right: 10px;
+			}
+			.chart-container {
+				width: 100%;
+				height: 100%;
+				flex: 1;
+				padding: 10px;
+				box-sizing: border-box;
+			}
+			canvas {
+				width: 100% !important;
+				height: 100% !important;
+			}
+			/* Enhanced Styling for the Visualization Div with Background Image */
+
+			/* Enhanced Styling for the Visualization Div with Blurred Background for Text */
+
+			.visualization {
+				position: relative;
+				background-image: url("bg2.webp"); /* Replace with your image URL */
+				background-size: cover;
+				background-position: top;
+				color: white; /* Ensures text is readable against the background */
+				display: flex;
+				align-items: center;
+				justify-content: center;
+				padding: 20px;
+				box-sizing: border-box;
+			}
+
+			.visualization::before {
+				content: "";
+				position: absolute;
+				top: 0;
+				left: 0;
+				right: 0;
+				bottom: 0;
+				background-color: rgba(
+					0,
+					0,
+					0,
+					0.3
+				); /* Semi-transparent overlay for better text readability */
+				z-index: 0;
+			}
+
+			.visualization .overlay {
+				position: relative;
+				z-index: 1;
+				max-width: 80%;
+				text-align: center;
+				backdrop-filter: blur(8px); /* Apply blur effect */
+				-webkit-backdrop-filter: blur(8px); /* Safari support */
+				padding: 10px;
+				border-radius: 10px;
+			}
+
+			.visualization h2 {
+				font-size: 36px; /* Adjusted font size */
+				font-weight: bold;
+				margin-bottom: 15px;
+			}
+
+			.visualization p {
+				font-size: 16px;
+				margin-bottom: 15px;
+			}
+
+			.visualization ul {
+				list-style-type: disc;
+				padding-left: 20px;
+				text-align: left;
+				display: inline-block;
+			}
+
+			.visualization ul li {
+				font-size: 16px;
+				margin-bottom: 10px;
+			}
+		</style>
+	</head>
+	<body>
+		<!-- Grid Layout -->
+		<div class="grid-item">
+			<div class="controls">
+				<label for="countyDropdown">Select County: </label>
+				<select id="countyDropdown">
+					<option value="all">All Counties</option>
+				</select>
+			</div>
+			<div id="map"></div>
+		</div>
+		<div class="grid-item">
+			<div class="controls">
+				<label for="procedureCategoryDropdown"
+					>Select Procedure Category:
+				</label>
+				<select id="procedureCategoryDropdown">
+					<!-- "All Categories" option removed -->
+				</select>
+			</div>
+			<div class="chart-container">
+				<canvas id="averageCostBarChart"></canvas>
+			</div>
+		</div>
+
+		<!-- Updated Third Grid Item with Background Image and Enhanced Styling -->
+		<div class="grid-item visualization">
+			<div class="overlay">
+				<h2>Key Insights</h2>
+				<p>Explore the following key points derived from our data analysis:</p>
+				<ul>
+					<li>
+						Facility A has the highest average hospital cost for Procedure X.
+					</li>
+					<li>Facility B shows significant cost savings in Procedure Y.</li>
+					<li>
+						There is a consistent trend of rising costs across multiple
+						facilities.
+					</li>
+				</ul>
+			</div>
+		</div>
+
+		<div class="grid-item">
+			<div class="chart-container">
+				<canvas id="stackedBarChart"></canvas>
+			</div>
+		</div>
+
+		<script>
+			// Initialize the map
+			var map = L.map("map").setView([42.65, -73.75], 7); // Centered on NY State
+
+			// Add OpenStreetMap tiles
+			L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+				maxZoom: 18,
+			}).addTo(map);
+
+			let markers = [];
+
+			// Define a color scale for cost differences
+			function getColor(d) {
+				return d > 50000
+					? "#800026"
+					: d > 40000
+					? "#BD0026"
+					: d > 30000
+					? "#E31A1C"
+					: d > 20000
+					? "#FC4E2A"
+					: d > 10000
+					? "#FD8D3C"
+					: d > 5000
+					? "#FEB24C"
+					: d > 1000
+					? "#FED976"
+					: "#FFEDA0";
+			}
+
+			function updateMap(data, selectedCounty) {
+				// Clear existing markers
+				markers.forEach((marker) => map.removeLayer(marker));
+				markers = [];
+
+				// Filter data based on selected county
+				const filteredData =
+					selectedCounty === "all"
+						? data
+						: data.filter((row) => row["Hospital County"] === selectedCounty);
+
+				// Add new markers
+				filteredData.forEach((row) => {
+					if (row.Latitude && row.Longitude) {
+						const latitude = parseFloat(row.Latitude);
+						const longitude = parseFloat(row.Longitude);
+						const difference = parseFloat(row.Mean_Cost_Difference);
+
+						const marker = L.circleMarker([latitude, longitude], {
+							radius: 10,
+							fillColor: getColor(difference),
+							color: "#000",
+							weight: 1,
+							fillOpacity: 0.8,
+						})
+							.bindPopup(
+								`<b>County:</b> ${row["Hospital County"]}<br>` +
+									`<b>Mean Cost Difference:</b> $${difference.toFixed(2)}`
+							)
+							.addTo(map);
+
+						markers.push(marker);
+					}
+				});
+			}
+
+			// Load CSV and initialize map dropdown
+			Papa.parse("aggregated_cost_discrepancies.csv", {
+				download: true,
+				header: true,
+				complete: function (results) {
+					const data = results.data;
+
+					const countyDropdown = document.getElementById("countyDropdown");
+					const counties = [
+						...new Set(data.map((row) => row["Hospital County"])),
+					].sort();
+					counties.forEach((county) => {
+						const option = document.createElement("option");
+						option.value = county;
+						option.textContent = county;
+						countyDropdown.appendChild(option);
+					});
+
+					// Add event listener to dropdown
+					countyDropdown.addEventListener("change", function () {
+						updateMap(data, this.value);
+					});
+
+					// Initial render
+					updateMap(data, "all");
+				},
+			});
+
+			// Create the average total hospital cost bar chart per Facility Name for selected Procedure Category
+			function createAverageCostBarChart(data, selectedCategory) {
+				const ctx = document
+					.getElementById("averageCostBarChart")
+					.getContext("2d");
+
+				// Filter data based on selected procedure category
+				const filteredData = selectedCategory
+					? data.filter((row) => row["Procedure Category"] === selectedCategory)
+					: [];
+
+				// Calculate average total hospital cost per Facility Name
+				const facilityCosts = {};
+				filteredData.forEach((row) => {
+					const facility = row["Facility Name"];
+					const cost = parseFloat(row["Total Hospital Costs"]);
+					if (!facilityCosts[facility]) {
+						facilityCosts[facility] = { total: 0, count: 0 };
+					}
+					facilityCosts[facility].total += cost;
+					facilityCosts[facility].count += 1;
+				});
+
+				const facilities = Object.keys(facilityCosts).sort();
+				const averageCosts = facilities.map(
+					(facility) =>
+						facilityCosts[facility].total / facilityCosts[facility].count
+				);
+
+				// Generate a consistent color palette
+				const backgroundColors = facilities.map((_, index) => {
+					const hue = (index * 360) / facilities.length;
+					return `hsl(${hue}, 70%, 50%)`;
+				});
+
+				// Destroy previous chart instance if exists
+				if (window.averageCostBarChartInstance) {
+					window.averageCostBarChartInstance.destroy();
+				}
+
+				window.averageCostBarChartInstance = new Chart(ctx, {
+					type: "bar",
+					data: {
+						labels: facilities,
+						datasets: [
+							{
+								label: "Average Total Hospital Cost",
+								data: averageCosts,
+								backgroundColor: backgroundColors,
+								borderColor: backgroundColors.map((color) => {
+									// Darken the border color slightly
+									const hsl = color.match(/hsl\((\d+), (\d+)%, (\d+)%\)/);
+									if (hsl) {
+										const [_, h, s, l] = hsl;
+										const newL = Math.max(0, Math.min(100, parseInt(l) - 10));
+										return `hsl(${h}, ${s}%, ${newL}%)`;
+									}
+									return color;
+								}),
+								borderWidth: 1,
+							},
+						],
+					},
+					options: {
+						responsive: true,
+						plugins: {
+							tooltip: {
+								callbacks: {
+									label: (context) => {
+										return `$${context.raw.toFixed(2)}`;
+									},
+								},
+							},
+							legend: {
+								display: false,
+							},
+							// Removed data labels for better readability
+						},
+						layout: {
+							padding: {
+								left: 50, // Added left padding to prevent y-axis label from being cut off
+							},
+						},
+						scales: {
+							x: {
+								title: {
+									display: true,
+									text: "Facility Name",
+									font: {
+										size: 12,
+										weight: "bold",
+									},
+								},
+								ticks: {
+									autoSkip: false,
+									maxRotation: 90,
+									minRotation: 45,
+								},
+							},
+							y: {
+								title: {
+									display: true,
+									text: "Average Total Hospital Cost",
+									font: {
+										size: 12,
+										weight: "bold",
+									},
+								},
+								beginAtZero: true,
+							},
+						},
+					},
+					// Removed ChartDataLabels plugin
+				});
+			}
+
+			// Load facility-specific costs CSV and initialize the average cost bar chart
+			Papa.parse("facility_specific_costs.csv", {
+				download: true,
+				header: true,
+				complete: function (results) {
+					const data = results.data;
+
+					const procedureCategoryDropdown = document.getElementById(
+						"procedureCategoryDropdown"
+					);
+					const categories = [
+						...new Set(
+							data
+								.map((row) => row["Procedure Category"])
+								.filter((cat) => cat && cat.trim() !== "")
+						),
+					].sort();
+					categories.forEach((category, index) => {
+						const option = document.createElement("option");
+						option.value = category;
+						option.textContent = category;
+						procedureCategoryDropdown.appendChild(option);
+					});
+
+					// Select the first category by default if available
+					if (categories.length > 0) {
+						procedureCategoryDropdown.selectedIndex = 0;
+						createAverageCostBarChart(data, categories[0]);
+					}
+
+					procedureCategoryDropdown.addEventListener("change", function () {
+						const selectedCategory = this.value;
+						createAverageCostBarChart(data, selectedCategory);
+					});
+				},
+			});
+
+			// Existing Bar Chart Logic for the Fourth Grid
+			let stackedBarChart;
+
+			function updateStackedBarChart(data) {
+				// Extract data for Major Diagnostic Category and calculate percentage extra charged
+				const fullLabels = data.map((row) => row["Major Diagnostic Category"]);
+				const extraCostPercentage = data.map(
+					(row) => (parseFloat(row["Mean_Cost_Ratio"]) - 1) * 100
+				);
+
+				// Truncate long labels and add ellipsis for display on axis
+				const truncatedLabels = fullLabels.map((label) =>
+					label.length > 20 ? label.substring(0, 17) + "..." : label
+				);
+
+				// Color array to cycle through for each bar
+				const colors = [
+					"#FF6384",
+					"#36A2EB",
+					"#FFCE56",
+					"#4BC0C0",
+					"#9966FF",
+					"#FF9F40",
+					"#2ca02c",
+					"#d62728",
+					"#9467bd",
+					"#8c564b",
+					"#e377c2",
+					"#7f7f7f",
+					"#bcbd22",
+					"#17becf",
+				];
+
+				// Destroy existing chart if present
+				if (stackedBarChart) stackedBarChart.destroy();
+
+				const ctx = document.getElementById("stackedBarChart").getContext("2d");
+
+				stackedBarChart = new Chart(ctx, {
+					type: "bar",
+					data: {
+						labels: truncatedLabels,
+						datasets: [
+							{
+								label: "Percentage Extra Charged",
+								data: extraCostPercentage,
+								backgroundColor: extraCostPercentage.map(
+									(_, i) => colors[i % colors.length]
+								),
+								borderColor: "rgba(0,0,0,0.1)",
+								borderWidth: 1,
+							},
+						],
+					},
+					options: {
+						responsive: true,
+						maintainAspectRatio: false,
+						layout: {
+							padding: 20,
+						},
+						plugins: {
+							legend: {
+								display: false, // Disable the legend
+							},
+							tooltip: {
+								backgroundColor: "rgba(0,0,0,0.7)",
+								titleFont: { size: 14 },
+								bodyFont: { size: 12 },
+								callbacks: {
+									// Show full label on hover
+									title: (tooltipItems) => {
+										const index = tooltipItems[0].dataIndex;
+										return fullLabels[index];
+									},
+									label: (context) => {
+										return `${context.dataset.label}: ${context.raw.toFixed(
+											2
+										)}%`;
+									},
+								},
+							},
+						},
+						// Inside the updateStackedBarChart function, modify the scales section as follows
+						scales: {
+							x: {
+								title: {
+									display: true,
+									text: "Major Diagnostic Category",
+									font: {
+										size: 12, // Increased font size
+										weight: "bold", // Make the label bold
+									},
+								},
+								ticks: {
+									maxRotation: 45,
+									minRotation: 45,
+									callback: function (value, index) {
+										return truncatedLabels[index];
+									},
+								},
+								grid: {
+									display: false,
+								},
+							},
+							y: {
+								title: {
+									display: true,
+									text: "Percentage Extra Charged (%)",
+									font: {
+										size: 12, // Increased font size
+										weight: "bold", // Make the label bold
+									},
+								},
+								beginAtZero: false,
+								// Values range approximately from 200% to 600%
+								min: 100,
+								max: 550,
+								grid: {
+									color: "rgba(0, 0, 0, 0.1)",
+								},
+							},
+						},
+					},
+				});
+			}
+
+			// Load CSV and initialize the stacked bar chart
+			Papa.parse("major_diagnostic_costs.csv", {
+				download: true,
+				header: true,
+				complete: function (results) {
+					const data = results.data;
+					updateStackedBarChart(data);
+				},
+			});
+		</script>
+	</body>
+</html>
